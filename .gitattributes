@@ -1,0 +1,2 @@
+# Windows batch files need CRLF line endings, wherever the repo is checked out or downloaded.
+*.bat text eol=crlf

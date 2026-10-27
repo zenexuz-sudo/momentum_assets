@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# PyInstaller's working files, when the .exe is built here
+build/
+dist/
+*.spec

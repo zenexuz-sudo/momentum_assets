@@ -1,0 +1,52 @@
+# Builds MomentumAssets.exe from a tagged commit and attaches it to that tag's GitHub Release,
+# so anyone can see exactly which code an .exe came from. To make a release: push a tag like
+# v1.0.0 (see the README's notes for maintainers).
+#
+# Everything is pinned: each action to a commit, Python to one version, and PyInstaller and
+# what it needs to one version and hash each (requirements-build.txt).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write          # to create the release and attach the .exe
+
+jobs:
+  exe:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1    # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0    # v7.1.0
+        with:
+          python-version: "3.14.3"
+
+      - name: Tests
+        run: python -m unittest
+
+      - name: Build tools
+        run: python -m pip install --require-hashes --no-deps -r requirements-build.txt
+
+      - name: Build MomentumAssets.exe
+        run: >
+          python -m PyInstaller --onefile --windowed --clean --noconfirm
+          --name MomentumAssets --icon assets/icon.ico momentum_assets.py
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/MomentumAssets.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  MomentumAssets.exe" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" dist/MomentumAssets.exe dist/SHA256SUMS.txt
+          --title "MomentumAssets ${{ github.ref_name }}"
+          --notes "Built by GitHub from commit ${{ github.sha }} (this tag). Download MomentumAssets.exe and double-click it; see the README for what Windows may say the first time."

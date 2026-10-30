@@ -20,17 +20,24 @@ def settings_file():
 
 
 def load(path=None):
+    """The settings, or another of the files the tool keeps (state.json, installed.json, a
+    game's progress.json). {} if it's missing or doesn't read: the caller then starts over."""
     path = path or settings_file()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        values = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return values if isinstance(values, dict) else {}
 
 
 def save(values, path=None):
+    """Written beside the file first and then swapped in, so a stop part way through leaves the
+    old file whole, never half a file."""
     path = path or settings_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(values, indent=1), encoding="utf-8")
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(values, indent=1), encoding="utf-8")
+    os.replace(temp, path)
 
 
 def default_data(game_dir):

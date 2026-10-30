@@ -212,6 +212,25 @@ class WholeJob(unittest.TestCase):
         self.assertEqual([r for r in steam.runs if r[1] == "files"], [(440, "files")])  # the index only
         self.assertEqual(self._packs(), {})
 
+    def test_half_written_progress_and_record_files_cost_a_redo_not_a_crash(self):
+        """A stop part way through writing progress.json or installed.json (on an older version,
+        or a power cut) leaves a file that doesn't read. The game is then built again."""
+        (self.data / "build" / "tf2").mkdir(parents=True)
+        (self.data / "build" / "tf2" / "progress.json").write_text('{"fingerprint": {"manif')
+        (self.data / "installed.json").write_text('{"440": {"game": "Team Fort')
+        result, out = self._run(FakeSteam(self.store), ("tf2",))
+        self.assertEqual(out.stages[440][-1], report.DONE)
+        self.assertEqual(json.loads((self.data / "installed.json").read_text())["440"]["packs"],
+                         ["mounted_1_tf2_01.vpk"])
+
+    def test_space_is_checked_once_before_anything_downloads(self):
+        """The engine's check, in plain words, is the only one: once it has said yes, building
+        a game doesn't stop on a rougher sum of its own."""
+        with mock.patch.object(settings, "free_bytes", lambda _p: 10 ** 12), \
+                mock.patch.object(build.shutil, "disk_usage", lambda _p: mock.Mock(free=1000)):
+            result, out = self._run(FakeSteam(self.store), ("tf2",))
+        self.assertEqual(out.stages[440][-1], report.DONE)
+
     def test_the_data_folder_is_checked_first(self):
         steam = FakeSteam(self.store)
         out = Recorder()
@@ -309,6 +328,58 @@ class Reporting(unittest.TestCase):
         text = report.qr_text([[True, False], [False, True]])
         self.assertIn("\x1b[30;107m", text)     # top dark, bottom light
         self.assertIn("\x1b[97;40m", text)      # top light, bottom dark
+
+
+class SavedState(unittest.TestCase):
+    """state.json, the Steam account name and how it signed in."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name)
+        patch = mock.patch.object(depot, "ensure_tool", lambda *a: Path("DepotDownloader.exe"))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_half_written_file_means_signing_in_again(self):
+        (self.data / "state.json").write_text('{"account": "pla')
+        self.assertIsNone(depot.Session(self.data, report.Reporter()).account)
+
+    def test_a_stop_while_saving_leaves_the_old_file_whole(self):
+        sess = depot.Session(self.data, report.Reporter())
+        sess.state = {"account": "player", "method": depot.QR}
+        sess._save()
+        sess.state = {"account": "someone else", "method": depot.PASSWORD}
+        with mock.patch.object(settings.os, "replace", side_effect=OSError("the power went")), \
+                self.assertRaises(OSError):
+            sess._save()
+        self.assertEqual(depot.Session(self.data, report.Reporter()).account, "player")
+
+
+class StopAsItStarts(unittest.TestCase):
+    def test_a_stop_just_as_a_download_starts_still_ends_it(self):
+        """STOP lands after _run's own check but before the DepotDownloader is on the list
+        stop_all ends: it must still be ended, not left running."""
+        self.addCleanup(depot.STOP.clear)
+        killed = []
+
+        class Proc:
+            stdout = []
+
+            def kill(self):
+                killed.append(True)
+
+            def wait(self):
+                return 0
+
+        def start(*a, **k):
+            depot.stop_all()                    # the player clicks STOP just then
+            return Proc()
+        sess = depot.Session.__new__(depot.Session)
+        sess.report, sess.state, sess.data, sess.exe = report.Reporter(), {"account": "p"}, Path("."), Path("x")
+        with mock.patch.object(depot.subprocess, "Popen", start), self.assertRaises(depot.Stopped):
+            sess._run(440, Path(tempfile.gettempdir()), True, None, None)
+        self.assertEqual(killed, [True])
 
 
 class LapsedCode(unittest.TestCase):

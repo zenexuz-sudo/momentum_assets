@@ -456,11 +456,7 @@ class App:
 
     def _state_account(self):
         """The Steam account a saved sign-in in the data folder is for, if there is one."""
-        try:
-            import json
-            return json.loads((self.data / "state.json").read_text()).get("account")
-        except (OSError, ValueError):
-            return None
+        return settings.load(self.data / "state.json").get("account")
 
     def _pick_folder(self):
         if self.state != "setup":

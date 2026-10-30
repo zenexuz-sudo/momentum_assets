@@ -7,7 +7,6 @@ where it left off.
 """
 
 import hashlib
-import json
 import shutil
 import subprocess
 import time
@@ -15,7 +14,7 @@ import zlib
 from collections import defaultdict
 from dataclasses import dataclass
 
-from . import depot, games, momentum, report, vpk
+from . import depot, games, momentum, report, settings, vpk
 
 MAX_PACK = 1_900_000_000      # each of our packs stays under 2 GB
 BATCH_BYTES = 2_500_000_000   # parts downloaded per batch
@@ -33,13 +32,9 @@ class OutPack:
     sources: list    # (plan.Pack, vpk.Entry), same order as files
 
 
-def short_name(app):
-    return games.short(app)
-
-
 def layout(game, order):
     """Split a game's kept files into packs of at most MAX_PACK bytes, in path order."""
-    prefix = f"{momentum.OUR_PREFIX}{order}_{short_name(game.app)}_"
+    prefix = f"{momentum.OUR_PREFIX}{order}_{games.short(game.app)}_"
     packs, cur, off = [], None, 0
     for path, src, e in sorted(game.keep, key=lambda k: k[0]):
         if cur is None or (off + e.size > MAX_PACK and cur.files):
@@ -54,7 +49,7 @@ def layout(game, order):
 
 def ours_for(custom, app):
     """Our packs for one game in momentum/custom, whatever mount order they were built for."""
-    return sorted(custom.glob(f"{momentum.OUR_PREFIX}*_{short_name(app)}_*.vpk"))
+    return sorted(custom.glob(f"{momentum.OUR_PREFIX}*_{games.short(app)}_*.vpk"))
 
 
 def installed_matches(packs, custom, app):
@@ -147,8 +142,7 @@ def build_game(sess, game, order, indexes, data, game_dir, out=None):
     `out` is a report.Reporter."""
     out = out or report.Reporter()
     app = game.app
-    short = short_name(app)
-    work = data / "build" / short
+    work = data / "build" / games.short(app)
     depot_dir = data / "depots" / str(app)
     packs = layout(game, order)
     fp = _fingerprint(game, packs)
@@ -160,21 +154,17 @@ def build_game(sess, game, order, indexes, data, game_dir, out=None):
         return [p.name for p in packs]
 
     progress_file = work / "progress.json"
-    progress = json.loads(progress_file.read_text()) if progress_file.is_file() else {}
-    # Start again if anything changed, or if a stop while the packs were going in (a power
-    # cut, say) left some of them already moved into the game.
+    progress = settings.load(progress_file)
+    # Start again if anything changed, if the progress file doesn't read, or if a stop while
+    # the packs were going in (a power cut, say) left some of them already moved into the game.
     if progress.get("fingerprint") != fp or not all((work / p.name).is_file() for p in packs):
         if work.exists():
             shutil.rmtree(work)
         work.mkdir(parents=True)
-        need = sum(f.size for p in packs for f in p.files) + 2 * BATCH_BYTES
-        free = shutil.disk_usage(work).free
-        if free < need:
-            raise BuildError(f"Not enough disk space: {need / 1e9:.1f} GB needed, {free / 1e9:.1f} GB free.")
         for p in packs:
             vpk.create(work / p.name, p.files)
         progress = {"fingerprint": fp, "done": []}
-        progress_file.write_text(json.dumps(progress))
+        settings.save(progress, progress_file)
         out.say(f"Started {report.packs(len(packs))} for {game.name} ({sum(len(p.files) for p in packs):,} files).")
     done = {tuple(d) for d in progress["done"]}
 
@@ -210,7 +200,7 @@ def build_game(sess, game, order, indexes, data, game_dir, out=None):
                 h.flush()
             done.add(key)
             progress["done"] = sorted(done)
-            progress_file.write_text(json.dumps(progress))
+            settings.save(progress, progress_file)
 
         for dir_path, items in from_dir.items():
             key = (dir_path, -1)
@@ -286,7 +276,7 @@ def install(packs, work, game_dir, game, data, out=None):
     for p in packs:
         shutil.move(str(work / p.name), str(custom / p.name))
     record_file = data / "installed.json"
-    record = json.loads(record_file.read_text()) if record_file.is_file() else {}
+    record = settings.load(record_file)       # only a record: unreadable, it starts afresh
     record[str(game.app)] = {
         "game": game.name, "packs": [p.name for p in packs],
         "files": sum(len(p.files) for p in packs),
@@ -294,7 +284,7 @@ def install(packs, work, game_dir, game, data, out=None):
         "manifests": [list(m) for m in game.manifests],
         "installed": time.strftime("%Y-%m-%d %H:%M"),
     }
-    record_file.write_text(json.dumps(record, indent=1))
+    settings.save(record, record_file)
     shutil.rmtree(work, ignore_errors=True)
     out.stage(game.app, report.DONE, report.packs(len(packs)))
     out.progress(game.app, 1.0)

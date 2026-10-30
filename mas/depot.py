@@ -7,7 +7,6 @@ we keep only the account name, in state.json.
 """
 
 import hashlib
-import json
 import re
 import subprocess
 import sys
@@ -18,7 +17,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import report
+from . import report, settings
 
 VERSION = "3.4.0"
 ZIP_URL = (f"https://github.com/SteamRE/DepotDownloader/releases/download/"
@@ -109,14 +108,14 @@ class Session:
         self.report = reporter
         self.exe = ensure_tool(data, reporter.say)
         self.state_file = data / "state.json"
-        self.state = json.loads(self.state_file.read_text()) if self.state_file.is_file() else {}
+        self.state = settings.load(self.state_file)      # unreadable: sign in again
 
     @property
     def account(self):
         return self.state.get("account")
 
     def _save(self):
-        self.state_file.write_text(json.dumps(self.state, indent=2))
+        settings.save(self.state, self.state_file)
 
     def sign_in_with_password(self, account, app):
         """The password sign-in: DepotDownloader in a console box of its own, where the player
@@ -211,6 +210,8 @@ class Session:
                                 creationflags=_NO_WINDOW)
         _running.add(proc)
         try:
+            if STOP.is_set():
+                proc.kill()        # a stop between the check above and the add missed it
             for raw in proc.stdout:
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if qr.feed(line):
